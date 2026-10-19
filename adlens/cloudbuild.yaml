@@ -1,0 +1,39 @@
+# Optional CI/CD for the AdLens ViGenAiR engine.
+#
+# Create a Cloud Build trigger in project adlens-vigenair (region europe-west1):
+#   - Source: GitHub repo AnalyticsLiv-Digital/vigenair (connect it once in the console:
+#     Cloud Build → Repositories → Link repository)
+#   - Event: push to branch ^adlens$      Config file: adlens/cloudbuild.yaml
+#   - Included files filter: service/**   (docs-only pushes don't redeploy)
+#   - Substitution: _ENV=dev
+# For prod, create a second trigger with _ENV=prod and "Require approval" switched on,
+# or keep prod manual with adlens/deploy.sh prod.
+#
+# The Cloud Build service account needs: roles/cloudfunctions.developer, roles/iam.serviceAccountUser
+# on the compute default SA, and roles/storage.admin on the bucket (bucket must already exist).
+substitutions:
+  _ENV: dev
+  _REGION: europe-west1
+
+steps:
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    dir: service
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        if [ "${_ENV}" = "prod" ]; then FN=vigenair-adlens; BUCKET=adlens-vigenair-prod; else FN=vigenair-adlens-dev; BUCKET=adlens-vigenair-dev; fi
+        grep -q "CONFIG_C2PA_REQUIRED: 'false'" .env.yaml
+        gcloud functions deploy "$$FN" \
+          --project="$PROJECT_ID" --gen2 --region="${_REGION}" --runtime=python310 --source=. \
+          --entry-point=gcs_file_uploaded --env-vars-file=.env.yaml \
+          --timeout=540s --memory=32Gi --cpu=8 \
+          --trigger-event-filters="type=google.cloud.storage.object.v1.finalized" \
+          --trigger-event-filters="bucket=$$BUCKET" \
+          --trigger-location="${_REGION}" \
+          --update-labels="app=adlens,env=${_ENV},git-sha=${SHORT_SHA}"
+
+timeout: 3600s
+options:
+  logging: CLOUD_LOGGING_ONLY
